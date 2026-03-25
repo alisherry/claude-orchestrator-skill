@@ -23,7 +23,10 @@ Monitor GitHub Actions CI for the current branch. Check every minute, flag failu
 
 3. **Set up a recurring check every 1 minute** using CronCreate with this prompt:
    ```
-   Run the babysit-ci check: gh run list --branch <BRANCH> --json databaseId,status,conclusion,name | jq '[.[] | select(.status != "completed" or .conclusion == "failure")] | if length == 0 then "ALL PASSING" else . end'
+   Run the babysit-ci check for PR #<PR_NUMBER> on branch <BRANCH>:
+   1. CI: gh run list --branch <BRANCH> --json databaseId,status,conclusion,name | jq '[.[] | select(.status != "completed" or .conclusion == "failure")] | if length == 0 then "ALL PASSING" else . end'
+   2. Drill into composite workflow sub-jobs for failures.
+   3. PR Comments: Fetch new comments with gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments, compare against .claude/babysit-ci-comments-<PR_NUMBER>.json, and address any new ones.
    ```
 
 4. **Run the first check immediately** (don't wait for the cron).
@@ -32,13 +35,13 @@ Monitor GitHub Actions CI for the current branch. Check every minute, flag failu
 
    ### CI Failures
    - If all jobs are passing or still in progress with no failures: report status briefly and wait for the next tick.
-   - **For composite workflows like "Rush Projects"**: The top-level run may show `in_progress` while sub-jobs have already failed. When a run contains sub-jobs, drill into them:
+   - **For composite workflows like "Rush Projects"**: The top-level run may show `in_progress` or even `success` while sub-jobs have failed. **Always** drill into sub-jobs for every run on each check — do not trust the top-level conclusion alone:
      ```
-      gh run view <databaseId> --json jobs | jq '.jobs[] | select(.conclusion == "failure") | {name, conclusion}'
+     gh run view <databaseId> --json jobs | jq '.jobs[] | select(.conclusion == "failure") | {name, conclusion}'
      ```
-      This catches failures in sub-steps like Prettier, Lint, E2E tests, etc. that won't surface in the top-level `gh run list`.
-
-   - If any job has `"conclusion": "failure"`:
+     This catches failures in sub-steps like Prettier, Lint, Tests, E2E, etc. that won't surface in `gh run list`.
+   - **CRITICAL**: When sub-jobs fail, always fetch the actual logs (`--log-failed` or job-specific logs via `gh api repos/{owner}/{repo}/actions/jobs/{job_id}/logs`) and read the test output to identify the root cause. Never assume failures are "infra flakes" or "auto-retried" without reading the logs and confirming the error is unrelated to your changes. If the failing test name matches a file you modified, it is almost certainly your bug.
+   - If any job or sub-job has `"conclusion": "failure"`:
      1. **Get the failure details**: `gh run view <databaseId> --log-failed 2>&1 | tail -80`
      2. **Extract an error signature**: A short, unique key from the error (e.g., `"TS2304:useEffect"`, `"jest:timeout:auth.spec"`, `"eslint:no-unused-vars:billing-guard"`). This is used to detect repeated failures.
      3. **Check the error log**: Look for previous entries with the same `error_signature`.
@@ -68,7 +71,7 @@ Monitor GitHub Actions CI for the current branch. Check every minute, flag failu
      5. **Skip bot comments** that are purely informational (e.g., deployment status, coverage reports).
      6. **Log the comment** as addressed with timestamp and action taken.
 
-6. **When all jobs show `"status": "completed"` with `"conclusion": "success"` and all comments are addressed:**
+6. **When all jobs show `"status": "completed"` AND all sub-jobs within every run also pass (no `"conclusion": "failure"` at any level) AND all comments are addressed:**
    - Report "All CI checks passing, all comments addressed" with a summary.
    - Include a summary of the error log: how many errors were encountered, how many fixed, how many escalated.
    - Cancel the cron job using CronDelete.
